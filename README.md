@@ -3,7 +3,7 @@
 A macOS desktop AI assistant with hotkey activation and voice — built from scratch while learning Python and AI engineering fundamentals.
 
 ## Status
--[ ] In development — Phase 1 (Core Desktop Assistant)
+In development — Phase 1 (Core Desktop Assistant)
 Currently on Day 3: hotkey-triggered terminal chatbot connected to Gemini API.
 
 ## Roadmap
