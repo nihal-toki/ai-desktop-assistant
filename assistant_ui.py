@@ -1,12 +1,15 @@
 import sys
 import os
+import random
+import signal
+import math
 from dotenv import load_dotenv
 from google import genai
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QLineEdit, QScrollArea
 )
-from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor, QPainterPath, QBrush, QPen
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QRectF, QPointF
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QPainterPath, QBrush, QPen, QTransform
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QRectF
 from pynput import keyboard
 
 load_dotenv()
@@ -26,29 +29,29 @@ chat_session = client.chats.create(
 
 
 class SpeechBubble(QWidget):
-    """A container widget that paints itself as a rounded speech bubble
-    with a small pointed tail, and holds any child widgets inside it."""
+    """A container widget painted as a rounded speech bubble with a
+    small tail at the TOP-RIGHT, pointing upward toward the character
+    that sits above it."""
 
     def __init__(self):
         super().__init__()
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.inner_layout = QVBoxLayout()
-        self.inner_layout.setContentsMargins(16, 16, 16, 24)
+        self.inner_layout.setContentsMargins(16, 24, 16, 16)
         self.setLayout(self.inner_layout)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        rect = QRectF(0, 0, self.width(), self.height() - 12)
+        rect = QRectF(0, 12, self.width(), self.height() - 12)
         path = QPainterPath()
         path.addRoundedRect(rect, 18, 18)
 
-        tail_x = 40
+        tail_x = self.width() - 56
         tail = QPainterPath()
-        tail.moveTo(tail_x, rect.bottom())
-        tail.lineTo(tail_x + 16, rect.bottom())
-        tail.lineTo(tail_x, rect.bottom() + 12)
+        tail.moveTo(tail_x, rect.top())
+        tail.lineTo(tail_x + 16, rect.top())
+        tail.lineTo(tail_x + 8, rect.top() - 12)
         tail.closeSubpath()
 
         path.addPath(tail)
@@ -58,43 +61,70 @@ class SpeechBubble(QWidget):
         painter.drawPath(path)
 
 
+class ShadowWidget(QWidget):
+    """A soft elliptical shadow whose size/opacity can be scaled to
+    imply how 'off the ground' the character currently is."""
+
+    def __init__(self, width, height):
+        super().__init__()
+        self.base_width = width
+        self.base_height = height
+        self.scale = 1.0
+        self.setFixedHeight(height + 6)
+
+    def set_scale(self, scale):
+        self.scale = max(0.4, min(1.0, scale))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.base_width * self.scale
+        h = self.base_height * self.scale
+        cx = self.width() / 2
+        cy = self.height() / 2
+
+        alpha = int(90 * self.scale)
+        painter.setBrush(QBrush(QColor(0, 0, 0, alpha)))
+        painter.setPen(QPen(Qt.PenStyle.NoPen))
+        painter.drawEllipse(QRectF(cx - w / 2, cy - h / 2, w, h))
+
+
 app = QApplication(sys.argv)
 
-SMALL_SIZE = (400, 60)
-FULL_SIZE = (400, 400)
-ICON_SIZE = (140, 100)
+CHAR_SIZE = (160, 160)
+BUBBLE_MAX_HEIGHT = 220
+WALK_SPEED = 3
+WALK_TICK_MS = 40
 
 window = QWidget()
-window.setWindowTitle("Zebraz")
-window.resize(*SMALL_SIZE)
-window.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+window.setWindowFlags(
+    Qt.WindowType.FramelessWindowHint
+    | Qt.WindowType.WindowStaysOnTopHint
+    | Qt.WindowType.Tool
+)
+window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+window.setStyleSheet("background: transparent;")
 
 layout = QVBoxLayout()
+layout.setContentsMargins(0, 0, 0, 0)
+layout.setSpacing(4)
 
-base_icon_pixmap = QPixmap("chat_icon.png").scaled(
-    ICON_SIZE[0], ICON_SIZE[1],
+character_label = QLabel()
+character_pixmap_right = QPixmap("character.png").scaled(
+    CHAR_SIZE[0], CHAR_SIZE[1],
     Qt.AspectRatioMode.KeepAspectRatio,
     Qt.TransformationMode.SmoothTransformation
 )
+character_pixmap_left = character_pixmap_right.transformed(QTransform().scale(-1, 1))
+character_label.setPixmap(character_pixmap_right)
+character_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+character_label.setStyleSheet("background: transparent;")
+layout.addWidget(character_label)
 
-thinking_icon = QLabel()
-thinking_icon.setFixedSize(*ICON_SIZE)
-thinking_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-thinking_icon.hide()
-layout.addWidget(thinking_icon, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-
-def render_bubble_text(text):
-    pixmap = QPixmap(base_icon_pixmap)
-    painter = QPainter(pixmap)
-    painter.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-    painter.setPen(QColor("black"))
-    text_rect = pixmap.rect()
-    text_rect.adjust(0, -6, 0, -6)
-    painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, text)
-    painter.end()
-    thinking_icon.setPixmap(pixmap)
-
+shadow_widget = ShadowWidget(width=70, height=18)
+layout.addWidget(shadow_widget, alignment=Qt.AlignmentFlag.AlignHCenter)
 
 chat_label = QLabel("")
 chat_label.setWordWrap(True)
@@ -107,6 +137,7 @@ bubble_container.inner_layout.addWidget(chat_label)
 scroll_area = QScrollArea()
 scroll_area.setWidget(bubble_container)
 scroll_area.setWidgetResizable(True)
+scroll_area.setFixedHeight(BUBBLE_MAX_HEIGHT)
 scroll_area.setStyleSheet("""
     QScrollArea {
         background-color: transparent;
@@ -114,16 +145,32 @@ scroll_area.setStyleSheet("""
     }
 """)
 scroll_area.hide()
+layout.addWidget(scroll_area)
 
 input_box = QLineEdit()
 input_box.setPlaceholderText("How can I help you?")
-
-layout.addWidget(scroll_area)
+input_box.setStyleSheet("""
+    QLineEdit {
+        background-color: rgba(0, 0, 0, 160);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 6px 10px;
+    }
+""")
+input_box.hide()
 layout.addWidget(input_box)
+
 window.setLayout(layout)
+window.adjustSize()
 
 chat_history = ""
 first_question_asked = False
+chat_mode = False
+walk_direction = 1
+bounce_tick = 0
+BOUNCE_AMPLITUDE = 10
+BOUNCE_SPEED = 0.15
 
 dot_states = ["Thinking", "Thinking.", "Thinking..", "Thinking..."]
 dot_index = 0
@@ -133,7 +180,7 @@ dot_timer = QTimer()
 
 def animate_dots():
     global dot_index
-    render_bubble_text(dot_states[dot_index % len(dot_states)])
+    chat_label.setText(dot_states[dot_index % len(dot_states)])
     dot_index += 1
 
 
@@ -159,16 +206,12 @@ def show_answer(answer_text):
     global chat_history
 
     dot_timer.stop()
-    thinking_icon.hide()
-
-    if not scroll_area.isVisible():
-        scroll_area.show()
-        window.resize(*FULL_SIZE)
-        position_top_right()
 
     chat_history += f"<b>Assistant:</b> {answer_text}<br><br>"
     chat_label.setText(chat_history)
     scroll_area.verticalScrollBar().setValue(scroll_area.verticalScrollBar().maximum())
+    window.adjustSize()
+    position_top_right()
 
 
 def ask_gemini():
@@ -182,16 +225,14 @@ def ask_gemini():
         first_question_asked = True
 
     chat_history += f"<b>You:</b> {question}<br>"
-    if scroll_area.isVisible():
-        chat_label.setText(chat_history)
-        scroll_area.verticalScrollBar().setValue(scroll_area.verticalScrollBar().maximum())
-
     input_box.clear()
+    input_box.hide()
 
+    scroll_area.show()
     dot_index = 0
-    render_bubble_text("Thinking")
-    thinking_icon.show()
+    chat_label.setText("Thinking")
     dot_timer.start(400)
+    window.adjustSize()
 
     current_worker = GeminiWorker(question)
     current_worker.result_ready.connect(show_answer)
@@ -199,6 +240,11 @@ def ask_gemini():
 
 
 input_box.returnPressed.connect(ask_gemini)
+
+
+def dock_y():
+    screen = app.primaryScreen().availableGeometry()
+    return screen.bottom() - window.height()
 
 
 def position_top_right():
@@ -209,43 +255,150 @@ def position_top_right():
     window.move(x, y)
 
 
+last_dock_x = None
+
+
+def wander_step():
+    global walk_direction, bounce_tick
+    screen = app.primaryScreen().availableGeometry()
+
+    if random.random() < 0.01:
+        walk_direction *= -1
+
+    new_x = window.x() + walk_direction * WALK_SPEED
+
+    if new_x <= screen.left():
+        new_x = screen.left()
+        walk_direction = 1
+    elif new_x + window.width() >= screen.right():
+        new_x = screen.right() - window.width()
+        walk_direction = -1
+
+    bounce_tick += 1
+    bounce_offset = abs(math.sin(bounce_tick * BOUNCE_SPEED)) * BOUNCE_AMPLITUDE
+
+    window.move(new_x, dock_y() - int(bounce_offset))
+
+    shadow_scale = 1.0 - (bounce_offset / BOUNCE_AMPLITUDE) * 0.5
+    shadow_widget.set_scale(shadow_scale)
+
+    character_label.setPixmap(
+        character_pixmap_right if walk_direction == 1 else character_pixmap_left
+    )
+
+
+wander_timer = QTimer()
+wander_timer.timeout.connect(wander_step)
+
+
 class Bridge(QObject):
-    toggle_signal = pyqtSignal()
+    toggle_window_signal = pyqtSignal()
+    toggle_input_signal = pyqtSignal()
 
 
 bridge = Bridge()
 
 
+def enter_chat_mode():
+    global chat_mode, last_dock_x
+    chat_mode = True
+    last_dock_x = window.x()
+    wander_timer.stop()
+    shadow_widget.hide()
+    input_box.show()
+    input_box.setFocus()
+    window.adjustSize()
+    position_top_right()
+
+
+def exit_chat_mode():
+    global chat_mode
+    chat_mode = False
+    input_box.hide()
+    scroll_area.hide()
+    shadow_widget.show()
+    window.adjustSize()
+
+    screen = app.primaryScreen().availableGeometry()
+    x = last_dock_x if last_dock_x is not None else window.x()
+    x = max(screen.left(), min(x, screen.right() - window.width()))
+    window.move(x, dock_y())
+
+    wander_timer.start(WALK_TICK_MS)
+
+
 def toggle_window():
-    if window.isVisible():
-        window.hide()
+    if not chat_mode:
+        enter_chat_mode()
     else:
-        position_top_right()
-        window.show()
+        exit_chat_mode()
+
+
+def toggle_input():
+    if not chat_mode:
+        return
+    if input_box.isVisible():
+        input_box.hide()
+    else:
+        input_box.show()
         input_box.setFocus()
+    window.adjustSize()
 
 
-bridge.toggle_signal.connect(toggle_window)
+bridge.toggle_window_signal.connect(toggle_window)
+bridge.toggle_input_signal.connect(toggle_input)
 
 
-def on_activate():
-    bridge.toggle_signal.emit()
+def on_activate_window():
+    bridge.toggle_window_signal.emit()
 
 
-def for_canonical(f):
-    return lambda k: f(l.canonical(k))
+def on_activate_input():
+    bridge.toggle_input_signal.emit()
 
 
-hotkey = keyboard.HotKey(
+window_hotkey = keyboard.HotKey(
     keyboard.HotKey.parse('<cmd>+<shift>+a'),
-    on_activate
+    on_activate_window
 )
 
+input_hotkey = keyboard.HotKey(
+    keyboard.HotKey.parse('<cmd>+<shift>+m'),
+    on_activate_input
+)
+
+hotkeys = [window_hotkey, input_hotkey]
+
+
+def on_press(key):
+    canonical_key = l.canonical(key)
+    for hk in hotkeys:
+        hk.press(canonical_key)
+
+
+def on_release(key):
+    canonical_key = l.canonical(key)
+    for hk in hotkeys:
+        hk.release(canonical_key)
+
+
 l = keyboard.Listener(
-    on_press=for_canonical(hotkey.press),
-    on_release=for_canonical(hotkey.release)
+    on_press=on_press,
+    on_release=on_release
 )
 l.start()
 
-print("Widget assistant running. Press Cmd+Shift+A to show/hide it.")
+# Allow Ctrl+C in the terminal to actually stop the app.
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+signal_timer = QTimer()
+signal_timer.start(200)
+signal_timer.timeout.connect(lambda: None)
+
+# Start her out walking on the dock immediately.
+screen_geo = app.primaryScreen().availableGeometry()
+window.move(screen_geo.center().x(), dock_y())
+window.show()
+wander_timer.start(WALK_TICK_MS)
+
+print("Zebraz is wandering the desktop. Cmd+Shift+A: chat mode. Cmd+Shift+M: show/hide message bar.")
 sys.exit(app.exec())
