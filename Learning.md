@@ -38,3 +38,29 @@
   changing placeholder text after first message, auto-scroll to latest
 - Used system_instruction in the Gemini API call to control response formatting
   (concise, bullets only when genuinely list-shaped)
+
+## Day 5 — [Aug 5 2026]
+- Converted the widget into a Shimeji-style wandering desktop pet:
+  frameless, transparent window (WA_TranslucentBackground) with no
+  title bar, walking left-right along the bottom of the screen
+- Learned: QTimer-driven animation loop (wander_step) recalculates
+  position every ~40ms; direction flips at screen edges and randomly
+  mid-walk for natural movement
+- Added a bounce + shadow illusion for pseudo-3D depth: sine-wave
+  vertical offset for hopping motion, paired with a custom-painted
+  elliptical shadow that inversely scales (smaller/fainter when she's
+  "up", larger/darker when she's "down") — classic 2D game depth trick
+- Learned: QPixmap.transformed(QTransform().scale(-1,1)) mirrors an
+  image, used to flip her sprite based on walking direction
+- Split hotkeys: Cmd+Shift+A toggles full chat mode (she snaps to
+  top-right corner, wandering pauses); Cmd+Shift+M toggles just the
+  message input bar. Implemented via two separate pynput HotKey
+  objects fed through one shared listener
+- Fixed Ctrl+C not terminating the app: PyQt6's event loop blocks
+  Python's normal signal handling; fixed with
+  signal.signal(SIGINT, SIG_DFL) plus a small recurring QTimer that
+  lets the interpreter check for signals
+- Iterated on the character image itself: first version had a white
+  "sticker" outline that looked like a background box once floating
+  on the desktop; regenerated without the outline for true
+  per-pixel transparency
