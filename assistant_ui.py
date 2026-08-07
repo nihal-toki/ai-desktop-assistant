@@ -2,7 +2,6 @@ import sys
 import os
 import random
 import signal
-import math
 from dotenv import load_dotenv
 from google import genai
 from PyQt6.QtWidgets import (
@@ -61,34 +60,28 @@ class SpeechBubble(QWidget):
         painter.drawPath(path)
 
 
-class ShadowWidget(QWidget):
-    """A soft elliptical shadow whose size/opacity can be scaled to
-    imply how 'off the ground' the character currently is."""
+def create_fallback_character(width, height):
+    """Draws a simple placeholder character with a real alpha channel,
+    used only if character.png is missing or fails to load, so the
+    script never crashes on a missing asset."""
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.GlobalColor.transparent)
 
-    def __init__(self, width, height):
-        super().__init__()
-        self.base_width = width
-        self.base_height = height
-        self.scale = 1.0
-        self.setFixedHeight(height + 6)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    def set_scale(self, scale):
-        self.scale = max(0.4, min(1.0, scale))
-        self.update()
+    painter.setBrush(QBrush(QColor("#F7B6C2")))
+    painter.setPen(QPen(QColor("#5A4038"), 3))
+    painter.drawEllipse(width // 4, height // 8, width // 2, width // 2)
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(QColor("#A9C7E8")))
+    body_top = height // 8 + width // 2 - 10
+    painter.drawRoundedRect(
+        width // 3, body_top, width // 3, height - body_top - 10, 12, 12
+    )
 
-        w = self.base_width * self.scale
-        h = self.base_height * self.scale
-        cx = self.width() / 2
-        cy = self.height() / 2
-
-        alpha = int(90 * self.scale)
-        painter.setBrush(QBrush(QColor(0, 0, 0, alpha)))
-        painter.setPen(QPen(Qt.PenStyle.NoPen))
-        painter.drawEllipse(QRectF(cx - w / 2, cy - h / 2, w, h))
+    painter.end()
+    return pixmap
 
 
 app = QApplication(sys.argv)
@@ -112,16 +105,52 @@ layout.setContentsMargins(0, 0, 0, 0)
 layout.setSpacing(4)
 
 character_label = QLabel()
-character_pixmap_right = QPixmap("character.png").scaled(
-    CHAR_SIZE[0], CHAR_SIZE[1],
-    Qt.AspectRatioMode.KeepAspectRatio,
-    Qt.TransformationMode.SmoothTransformation
-)
+character_pixmap_right = QPixmap("character.png")
+if character_pixmap_right.isNull():
+    character_pixmap_right = create_fallback_character(*CHAR_SIZE)
+else:
+    character_pixmap_right = character_pixmap_right.scaled(
+        CHAR_SIZE[0], CHAR_SIZE[1],
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation
+    )
 character_pixmap_left = character_pixmap_right.transformed(QTransform().scale(-1, 1))
 character_label.setPixmap(character_pixmap_right)
 character_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 character_label.setStyleSheet("background: transparent;")
 layout.addWidget(character_label)
+
+
+class ShadowWidget(QWidget):
+    """A soft elliptical shadow whose size/opacity can be scaled to
+    imply how 'off the ground' the character currently is."""
+
+    def __init__(self, width, height):
+        super().__init__()
+        self.base_width = width
+        self.base_height = height
+        self.scale = 1.0
+        self.setFixedHeight(height + 6)
+        self.setStyleSheet("background: transparent;")
+
+    def set_scale(self, scale):
+        self.scale = max(0.4, min(1.0, scale))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.base_width * self.scale
+        h = self.base_height * self.scale
+        cx = self.width() / 2
+        cy = self.height() / 2
+
+        alpha = int(90 * self.scale)
+        painter.setBrush(QBrush(QColor(0, 0, 0, alpha)))
+        painter.setPen(QPen(Qt.PenStyle.NoPen))
+        painter.drawEllipse(QRectF(cx - w / 2, cy - h / 2, w, h))
+
 
 shadow_widget = ShadowWidget(width=70, height=18)
 layout.addWidget(shadow_widget, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -145,6 +174,7 @@ scroll_area.setStyleSheet("""
     }
 """)
 scroll_area.hide()
+scroll_area.viewport().setStyleSheet("background: transparent;")
 layout.addWidget(scroll_area)
 
 input_box = QLineEdit()
@@ -168,9 +198,6 @@ chat_history = ""
 first_question_asked = False
 chat_mode = False
 walk_direction = 1
-bounce_tick = 0
-BOUNCE_AMPLITUDE = 10
-BOUNCE_SPEED = 0.15
 
 dot_states = ["Thinking", "Thinking.", "Thinking..", "Thinking..."]
 dot_index = 0
@@ -242,9 +269,12 @@ def ask_gemini():
 input_box.returnPressed.connect(ask_gemini)
 
 
+DOCK_OVERLAP = 45
+
+
 def dock_y():
     screen = app.primaryScreen().availableGeometry()
-    return screen.bottom() - window.height()
+    return screen.bottom() - window.height() + DOCK_OVERLAP
 
 
 def position_top_right():
@@ -259,7 +289,7 @@ last_dock_x = None
 
 
 def wander_step():
-    global walk_direction, bounce_tick
+    global walk_direction
     screen = app.primaryScreen().availableGeometry()
 
     if random.random() < 0.01:
@@ -274,13 +304,7 @@ def wander_step():
         new_x = screen.right() - window.width()
         walk_direction = -1
 
-    bounce_tick += 1
-    bounce_offset = abs(math.sin(bounce_tick * BOUNCE_SPEED)) * BOUNCE_AMPLITUDE
-
-    window.move(new_x, dock_y() - int(bounce_offset))
-
-    shadow_scale = 1.0 - (bounce_offset / BOUNCE_AMPLITUDE) * 0.5
-    shadow_widget.set_scale(shadow_scale)
+    window.move(new_x, dock_y())
 
     character_label.setPixmap(
         character_pixmap_right if walk_direction == 1 else character_pixmap_left
