@@ -64,3 +64,24 @@
   "sticker" outline that looked like a background box once floating
   on the desktop; regenerated without the outline for true
   per-pixel transparency
+
+## Day 5 (cont.) — [Aug 7 2026]
+- Removed setMask()-based window shaping after realizing it broke smooth
+  alpha edges; reverted to WA_TranslucentBackground + native PNG alpha
+- Spent significant time debugging a persistent "checkerboard/white box"
+  transparency bug. Root cause: character.png's "transparent" areas were
+  baked-in checkerboard pixels at full opacity (alpha=255), not real
+  alpha=0 — despite Preview's "Has Alpha: 1" field, which only confirms
+  the file format supports alpha, not that pixels use it correctly
+- Learned to debug this properly by bisecting: isolated a minimal
+  transparent QWidget test (worked), then a QLabel+QPixmap with a
+  programmatically drawn shape (worked), then the real PNG file
+  specifically (failed) — proving the bug was in the file, not the code
+- Used Pillow (PIL) to read raw pixel RGBA values directly rather than
+  trusting any app's summary/preview — confirmed alpha=255 everywhere,
+  including "empty" checkerboard areas
+- Fixed by detecting neutral gray/white pixels (both checkerboard colors)
+  and setting their alpha to 0 programmatically
+- Simplified the wandering animation: removed the bounce/hop + shadow
+  pulse effect, kept flat horizontal walking bounded by the two screen
+  edges (the visual dock boundaries)
