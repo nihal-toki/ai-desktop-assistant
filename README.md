@@ -3,14 +3,14 @@
 A macOS desktop AI assistant with hotkey activation and voice — built from scratch while learning Python and AI engineering fundamentals.
 
 ## Status
-🚧 In development — Phase 1 (Core Desktop Assistant)
 
-Zebraz is a Shimeji-style wandering desktop pet: walks along the dock,
-hotkey-activated chat (Cmd+Shift+A), persistent conversation memory,
-speech-bubble UI with proper transparency. Core assistant v1 nearing completion.
+✅ Phase 1 complete — Core Desktop Assistant
+
+Zebraz is a macOS Shimeji-style desktop pet that walks along the dock and supports hotkey-activated chat (`Cmd+Shift+A`), persistent conversation memory, a transparent speech-bubble UI, and a menu-bar control with Show/Hide and Quit options.
 
 ## Roadmap
-- [ ] Phase 1: Hotkey + voice-activated LLM assistant (core)
+
+- [x] Phase 1: Core desktop assistant — hotkeys, chat, persistent memory, and menu-bar controls
 - [ ] Phase 2: RAG knowledge assistant
 - [ ] Phase 3: Agent tool use (AutoGen)
 - [ ] Phase 4: Multi-agent collaboration

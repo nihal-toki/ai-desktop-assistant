@@ -85,3 +85,22 @@
 - Simplified the wandering animation: removed the bounce/hop + shadow
   pulse effect, kept flat horizontal walking bounded by the two screen
   edges (the visual dock boundaries)
+
+## Day 6 — [Aug 11 2026]
+
+- Packaged Zebraz as a standalone macOS app with `py2app`
+- Learned: a packaged app does not run from the same working folder as a Terminal command, so relative file paths like `zebraz_memory.json` can point to different locations
+- Fixed persistent memory by storing it in a stable macOS user-data location:
+  `~/Library/Application Support/Zebraz/zebraz_memory.json`
+- Learned to separate bundled resources from user data:
+  - `character.png` and `.env` are read from the app bundle’s `Resources` folder
+  - conversation history is saved outside the bundle so it survives rebuilds and app updates
+- Added atomic memory saving: write to a temporary file first, then replace the previous file, reducing the chance of corrupted chat history
+- Fixed the desktop pet disappearing when another app became active by removing Qt’s `Tool` window flag; macOS treats Tool windows as utility panels and hides them when the app loses focus
+- Added a menu-bar tray icon with:
+  - Chat / cancel chat
+  - Show / hide Zebraz
+  - Quit Zebraz
+- Learned that macOS permissions apply separately to the packaged app and the Python interpreter, so Input Monitoring must be granted to `Zebraz.app` for global hotkeys to work
+- Updated `.gitignore` to protect `.env`, generated build files, and local conversation-memory files from Git commits
+
