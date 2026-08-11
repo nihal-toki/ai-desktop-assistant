@@ -219,3 +219,5 @@ __marimo__/
 .DS_Store
 zebraz_memory.json
 .obsidian/
+.obsidian/
+docs/
