@@ -15,8 +15,13 @@ from PyQt6.QtGui import (
     QPixmap, QPainter, QColor, QPainterPath, QBrush, QPen, QTransform,
     QIcon, QAction
 )
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QRectF
+from PyQt6.QtCore import (
+    Qt, QObject, pyqtSignal, QThread, QTimer, QRectF,
+    QPropertyAnimation, QEasingCurve, QPoint, pyqtProperty,
+    QParallelAnimationGroup, QSequentialAnimationGroup,
+)
 from pynput import keyboard
+from dashboard import ZebrazDashboard
 
 try:
     import objc
@@ -54,6 +59,31 @@ def application_data_path(filename):
 load_dotenv(bundled_resource_path(".env"))
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 MEMORY_FILE = application_data_path("zebraz_memory.json")
+POSITION_FILE = application_data_path("zebraz_position.json")
+
+
+def load_companion_position():
+    """Load Zebraz's saved screen position."""
+    if not os.path.exists(POSITION_FILE):
+        return None
+    try:
+        with open(POSITION_FILE, "r", encoding="utf-8") as position_file:
+            position = json.load(position_file)
+        return int(position["x"]), int(position["y"])
+    except Exception as error:
+        print(f"Could not load Zebraz position: {error}")
+        return None
+
+
+def save_companion_position(x, y):
+    """Save Zebraz's screen position."""
+    try:
+        with open(POSITION_FILE, "w", encoding="utf-8") as position_file:
+            json.dump({"x": int(x), "y": int(y)}, position_file)
+    except Exception as error:
+        print(f"Could not save Zebraz position: {error}")
+
+
 # Preserve conversations created by earlier terminal-only versions on first run.
 LEGACY_MEMORY_FILE = (
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "zebraz_memory.json")
@@ -114,20 +144,20 @@ def build_gemini_history(log):
     return history
 
 
+SYSTEM_INSTRUCTION = (
+    "Keep answers concise. Use bullet points or numbered lists only when "
+    "the content is naturally a list, steps, or comparison. Otherwise answer "
+    "in short plain sentences. Avoid long paragraphs."
+)
+
+
 conversation_log = load_conversation_log()
 archived_snapshot = list(conversation_log)
 
 try:
     chat_session = client.chats.create(
         model="gemini-3.6-flash",
-        config={
-            "system_instruction": (
-                "Keep answers concise. Use bullet points or numbered lists "
-                "only when the content is naturally a list, steps, or "
-                "comparison. Otherwise answer in short plain sentences. "
-                "Avoid long paragraphs."
-            )
-        },
+        config={"system_instruction": SYSTEM_INSTRUCTION},
         history=build_gemini_history(conversation_log),
     )
     if conversation_log:
@@ -137,14 +167,16 @@ except Exception as error:
     conversation_log = []
     chat_session = client.chats.create(
         model="gemini-3.6-flash",
-        config={
-            "system_instruction": (
-                "Keep answers concise. Use bullet points or numbered lists "
-                "only when the content is naturally a list, steps, or "
-                "comparison. Otherwise answer in short plain sentences. "
-                "Avoid long paragraphs."
-            )
-        },
+        config={"system_instruction": SYSTEM_INSTRUCTION},
+    )
+
+
+def reset_chat_session():
+    """Start a clean live Gemini chat without deleting saved history."""
+    global chat_session
+    chat_session = client.chats.create(
+        model="gemini-3.6-flash",
+        config={"system_instruction": SYSTEM_INSTRUCTION},
     )
 
 
@@ -183,7 +215,9 @@ def create_fallback_character(width, height):
     painter.drawEllipse(width // 4, height // 8, width // 2, width // 2)
     painter.setBrush(QBrush(QColor("#A9C7E8")))
     body_top = height // 8 + width // 2 - 10
-    painter.drawRoundedRect(width // 3, body_top, width // 3, height - body_top - 10, 12, 12)
+    painter.drawRoundedRect(
+        width // 3, body_top, width // 3, height - body_top - 10, 12, 12
+    )
     painter.end()
     return pixmap
 
@@ -192,22 +226,319 @@ app = QApplication(sys.argv)
 app.setQuitOnLastWindowClosed(False)
 CHAR_SIZE, BUBBLE_MAX_HEIGHT, WALK_SPEED, WALK_TICK_MS = (160, 160), 220, 3, 40
 window = QWidget()
-window.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+window.setWindowFlags(
+    Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+)
 window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 window.setStyleSheet("background: transparent;")
+
+
+class DraggableCharacterLabel(QLabel):
+    """Allow the companion to be dragged with playful reactions."""
+
+    def __init__(self, host_window):
+        super().__init__()
+        self.host_window = host_window
+        self.drag_offset = None
+        self.press_position = None
+        self.is_dragging = False
+        self.base_pixmap = None
+        self._visual_scale = 1.0
+        self.visual_animation = None
+
+        # Extra transparent room lets the character stretch without clipping.
+        self.setFixedSize(180, 180)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def set_base_pixmap(self, pixmap):
+        self.base_pixmap = pixmap
+        self.set_visual_scale(1.0)
+
+    def get_visual_scale(self):
+        return self._visual_scale
+
+    def set_visual_scale(self, scale):
+        self._visual_scale = max(0.82, min(1.12, float(scale)))
+
+        if self.base_pixmap is not None:
+            scaled_width = max(1, int(self.base_pixmap.width() * self._visual_scale))
+            scaled_height = max(1, int(self.base_pixmap.height() * self._visual_scale))
+            scaled_pixmap = self.base_pixmap.scaled(
+                scaled_width,
+                scaled_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.setPixmap(scaled_pixmap)
+
+        self.update()
+
+    visual_scale = pyqtProperty(
+        float,
+        fget=get_visual_scale,
+        fset=set_visual_scale,
+    )
+
+    def stop_visual_animation(self):
+        if self.visual_animation is not None:
+            self.visual_animation.stop()
+        self.visual_animation = None
+        self.set_visual_scale(1.0)
+        shadow = globals().get("shadow_widget")
+        if shadow is not None:
+            shadow.set_scale(1.0)
+
+    def play_pickup_animation(self):
+        """Lift the character visually when the mouse picks it up."""
+        self.stop_visual_animation()
+        shadow = globals().get("shadow_widget")
+        if shadow is None:
+            return
+
+        group = QParallelAnimationGroup(self)
+
+        character_animation = QPropertyAnimation(
+            self,
+            b"visual_scale",
+            group,
+        )
+        character_animation.setDuration(140)
+        character_animation.setStartValue(1.0)
+        character_animation.setEndValue(1.08)
+        character_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        shadow_animation = QPropertyAnimation(
+            shadow,
+            b"scale",
+            group,
+        )
+        shadow_animation.setDuration(140)
+        shadow_animation.setStartValue(1.0)
+        shadow_animation.setEndValue(0.55)
+        shadow_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        group.addAnimation(character_animation)
+        group.addAnimation(shadow_animation)
+        self.visual_animation = group
+        group.start()
+
+    def play_drop_animation(self):
+        """Give the character a soft squash and shadow on release."""
+        shadow = globals().get("shadow_widget")
+        if shadow is None:
+            return
+
+        first_bounce = QParallelAnimationGroup()
+        character_down = QPropertyAnimation(
+            self,
+            b"visual_scale",
+            first_bounce,
+        )
+        character_down.setDuration(90)
+        character_down.setStartValue(1.08)
+        character_down.setEndValue(0.94)
+        character_down.setEasingCurve(QEasingCurve.Type.InCubic)
+
+        shadow_down = QPropertyAnimation(
+            shadow,
+            b"scale",
+            first_bounce,
+        )
+        shadow_down.setDuration(90)
+        shadow_down.setStartValue(0.55)
+        shadow_down.setEndValue(1.15)
+        shadow_down.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        first_bounce.addAnimation(character_down)
+        first_bounce.addAnimation(shadow_down)
+
+        settle = QParallelAnimationGroup()
+        character_settle = QPropertyAnimation(
+            self,
+            b"visual_scale",
+            settle,
+        )
+        character_settle.setDuration(180)
+        character_settle.setStartValue(0.94)
+        character_settle.setEndValue(1.0)
+        character_settle.setEasingCurve(QEasingCurve.Type.OutBack)
+
+        shadow_settle = QPropertyAnimation(
+            shadow,
+            b"scale",
+            settle,
+        )
+        shadow_settle.setDuration(180)
+        shadow_settle.setStartValue(1.15)
+        shadow_settle.setEndValue(1.0)
+        shadow_settle.setEasingCurve(QEasingCurve.Type.OutBack)
+
+        settle.addAnimation(character_settle)
+        settle.addAnimation(shadow_settle)
+
+        sequence = QSequentialAnimationGroup(self)
+        sequence.addAnimation(first_bounce)
+        sequence.addAnimation(settle)
+        self.visual_animation = sequence
+        sequence.start()
+
+    def mousePressEvent(self, event):
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and not globals().get("chat_mode", False)
+        ):
+            self.drag_offset = (
+                event.globalPosition().toPoint()
+                - self.host_window.frameGeometry().topLeft()
+            )
+            self.press_position = event.globalPosition().toPoint()
+            self.is_dragging = False
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.play_pickup_animation()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.drag_offset is not None:
+            current_position = event.globalPosition().toPoint()
+
+            if (
+                not self.is_dragging
+                and (current_position - self.press_position).manhattanLength()
+                >= QApplication.startDragDistance()
+            ):
+                self.is_dragging = True
+
+            if self.is_dragging:
+                new_position = current_position - self.drag_offset
+                screen = app.primaryScreen().availableGeometry()
+                minimum_x = screen.left()
+                maximum_x = screen.right() - self.host_window.width()
+                minimum_y = screen.top()
+                maximum_y = screen.bottom() - self.host_window.height()
+                bounded_x = max(minimum_x, min(new_position.x(), maximum_x))
+                bounded_y = max(minimum_y, min(new_position.y(), maximum_y))
+                self.host_window.move(bounded_x, bounded_y)
+
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.drag_offset is not None
+        ):
+            was_dragging = self.is_dragging
+            self.drag_offset = None
+            self.press_position = None
+            self.is_dragging = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+            if was_dragging:
+                save_companion_position(
+                    self.host_window.x(), self.host_window.y()
+                )
+                self.play_drop_animation()
+            else:
+                self.play_click_reaction()
+
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def play_click_reaction(self):
+        """Make Zebraz hop, stretch, and squash when clicked."""
+        self.stop_visual_animation()
+        shadow = globals().get("shadow_widget")
+        start_position = self.host_window.pos()
+        up_position = QPoint(start_position.x(), start_position.y() - 10)
+        settle_position = QPoint(start_position.x(), start_position.y() + 3)
+
+        group = QParallelAnimationGroup(self)
+
+        position_animation = QPropertyAnimation(
+            self.host_window,
+            b"pos",
+            group,
+        )
+        position_animation.setDuration(360)
+        position_animation.setKeyValueAt(0.0, start_position)
+        position_animation.setKeyValueAt(0.28, up_position)
+        position_animation.setKeyValueAt(0.58, settle_position)
+        position_animation.setKeyValueAt(1.0, start_position)
+        position_animation.setEasingCurve(QEasingCurve.Type.OutBounce)
+        group.addAnimation(position_animation)
+
+        character_animation = QPropertyAnimation(
+            self,
+            b"visual_scale",
+            group,
+        )
+        character_animation.setDuration(360)
+        character_animation.setKeyValueAt(0.0, 1.0)
+        character_animation.setKeyValueAt(0.20, 1.08)
+        character_animation.setKeyValueAt(0.48, 0.94)
+        character_animation.setKeyValueAt(0.75, 1.03)
+        character_animation.setKeyValueAt(1.0, 1.0)
+        character_animation.setEasingCurve(QEasingCurve.Type.OutBack)
+        group.addAnimation(character_animation)
+
+        if shadow is not None:
+            shadow_animation = QPropertyAnimation(
+                shadow,
+                b"scale",
+                group,
+            )
+            shadow_animation.setDuration(360)
+            shadow_animation.setKeyValueAt(0.0, 1.0)
+            shadow_animation.setKeyValueAt(0.28, 0.62)
+            shadow_animation.setKeyValueAt(0.58, 1.12)
+            shadow_animation.setKeyValueAt(1.0, 1.0)
+            shadow_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            group.addAnimation(shadow_animation)
+
+        self.visual_animation = group
+        group.start()
+
+
 layout = QVBoxLayout()
 layout.setContentsMargins(0, 0, 0, 0)
 layout.setSpacing(4)
-character_label = QLabel()
-character_pixmap_right = QPixmap(bundled_resource_path("character.png"))
+character_label = DraggableCharacterLabel(window)
+
+# Load character.png from the same folder as this source file when running in PyCharm.
+# In a packaged app, bundled_resource_path() points to the app's Resources folder.
+if getattr(sys, "frozen", False):
+    character_path = bundled_resource_path("character.png")
+else:
+    character_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "character.png",
+    )
+
+print("Character path:", character_path)
+print("Character exists:", os.path.exists(character_path))
+
+character_pixmap_right = QPixmap(character_path)
+
+print("Character loaded:", not character_pixmap_right.isNull())
+
 if character_pixmap_right.isNull():
+    print("Using fallback character because character.png could not be loaded.")
     character_pixmap_right = create_fallback_character(*CHAR_SIZE)
 else:
-    character_pixmap_right = character_pixmap_right.scaled(*CHAR_SIZE, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    character_pixmap_right = character_pixmap_right.scaled(
+        *CHAR_SIZE,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
 character_pixmap_left = character_pixmap_right.transformed(QTransform().scale(-1, 1))
-character_label.setPixmap(character_pixmap_right)
-character_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+character_label.set_base_pixmap(character_pixmap_right)
 character_label.setStyleSheet("background: transparent;")
 layout.addWidget(character_label)
 
@@ -215,20 +546,32 @@ layout.addWidget(character_label)
 class ShadowWidget(QWidget):
     def __init__(self, width, height):
         super().__init__()
-        self.base_width, self.base_height, self.scale = width, height, 1.0
+        self.base_width = width
+        self.base_height = height
+        self._scale = 1.0
         self.setFixedHeight(height + 6)
         self.setStyleSheet("background: transparent;")
 
+    def get_scale(self):
+        return self._scale
+
     def set_scale(self, scale):
-        self.scale = max(0.4, min(1.0, scale))
+        self._scale = max(0.4, min(1.2, float(scale)))
         self.update()
+
+    scale = pyqtProperty(
+        float,
+        fget=get_scale,
+        fset=set_scale,
+    )
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width, height = self.base_width * self.scale, self.base_height * self.scale
+        width = self.base_width * self._scale
+        height = self.base_height * self._scale
         cx, cy = self.width() / 2, self.height() / 2
-        painter.setBrush(QBrush(QColor(0, 0, 0, int(90 * self.scale))))
+        painter.setBrush(QBrush(QColor(0, 0, 0, int(90 * min(self._scale, 1.0)))))
         painter.setPen(QPen(Qt.PenStyle.NoPen))
         painter.drawEllipse(QRectF(cx - width / 2, cy - height / 2, width, height))
 
@@ -372,7 +715,7 @@ def position_top_right():
     window.move(screen.right() - window.width() - margin, screen.top() + margin)
 
 
-last_dock_x = None
+last_pinned_position = None
 
 
 def wander_step():
@@ -400,11 +743,17 @@ class Bridge(QObject):
 
 
 bridge = Bridge()
+dashboard = None
+
+
+def open_dashboard():
+    if dashboard is not None:
+        dashboard.open_workspace()
 
 
 def enter_chat_mode():
-    global chat_mode, last_dock_x
-    chat_mode, last_dock_x = True, window.x()
+    global chat_mode, last_pinned_position
+    chat_mode, last_pinned_position = True, (window.x(), window.y())
     update_chat_action()
     wander_timer.stop()
     shadow_widget.hide()
@@ -423,10 +772,10 @@ def exit_chat_mode():
     history_box.hide()
     shadow_widget.show()
     window.adjustSize()
-    screen = app.primaryScreen().availableGeometry()
-    x = last_dock_x if last_dock_x is not None else window.x()
-    window.move(max(screen.left(), min(x, screen.right() - window.width())), dock_y())
-    wander_timer.start(WALK_TICK_MS)
+    if last_pinned_position is not None:
+        window.move(last_pinned_position[0], last_pinned_position[1])
+    # Wandering remains disabled.
+    # wander_timer.start(WALK_TICK_MS)
 
 
 def toggle_window():
@@ -461,7 +810,7 @@ def format_day_label(day_key, turns):
 def show_history_day(day_key, turns):
     history_content_label.setText("".join(
         f"<b>{'You' if turn['role'] == 'user' else 'Assistant'}:</b> {turn['text']}<br>"
-        + ("<br>" if turn['role'] != 'user' else "") for turn in turns
+        + ("<br>" if turn["role"] != "user" else "") for turn in turns
     ))
     history_content_scroll.verticalScrollBar().setValue(0)
 
@@ -505,6 +854,7 @@ def toggle_history():
     position_top_right()
 
 
+# The desktop companion keeps its original Cmd+Shift+A chat behaviour.
 bridge.toggle_window_signal.connect(toggle_window)
 bridge.toggle_input_signal.connect(toggle_input)
 bridge.toggle_history_signal.connect(toggle_history)
@@ -551,28 +901,31 @@ def create_tray_plus_icon():
 tray_icon = QSystemTrayIcon(create_tray_plus_icon())
 tray_icon.setToolTip("Zebraz")
 tray_menu = QMenu()
-chat_action = QAction("Chat with Buddy")
-chat_action.triggered.connect(toggle_window)
+chat_action = QAction("Open Zebraz")
+chat_action.triggered.connect(open_dashboard)
 tray_menu.addAction(chat_action)
 
 
 def update_chat_action():
-    chat_action.setText("Cancel Chat with Buddy" if chat_mode else "Chat with Buddy")
+    chat_action.setText("Open Zebraz")
 
 
 visibility_action = QAction("Hide Buddy")
 
 
-def toggle_visibility():
-    if window.isVisible():
+def set_companion_visible(visible):
+    if not visible:
         window.hide()
         wander_timer.stop()
-        visibility_action.setText("Show Buddy")
+        visibility_action.setText("Show Companion")
     else:
         window.show()
-        if not chat_mode:
-            wander_timer.start(WALK_TICK_MS)
-        visibility_action.setText("Hide Buddy")
+        # Wandering is disabled.
+        visibility_action.setText("Hide Companion")
+
+
+def toggle_visibility():
+    set_companion_visible(not window.isVisible())
 
 
 visibility_action.triggered.connect(toggle_visibility)
@@ -596,7 +949,30 @@ signal_timer = QTimer()
 signal_timer.start(200)
 signal_timer.timeout.connect(lambda: None)
 screen_geo = app.primaryScreen().availableGeometry()
-window.move(screen_geo.center().x(), dock_y())
+saved_position = load_companion_position()
+
+if saved_position is not None:
+    saved_x, saved_y = saved_position
+    maximum_x = screen_geo.right() - window.width()
+    maximum_y = screen_geo.bottom() - window.height()
+    safe_x = max(screen_geo.left(), min(saved_x, maximum_x))
+    safe_y = max(screen_geo.top(), min(saved_y, maximum_y))
+    window.move(safe_x, safe_y)
+else:
+    window.move(screen_geo.center().x(), dock_y())
+
 window.show()
-wander_timer.start(WALK_TICK_MS)
+# Wandering remains disabled.
+# wander_timer.start(WALK_TICK_MS)
+
+dashboard = ZebrazDashboard(
+    conversation_log=conversation_log,
+    save_conversation=save_conversation_log,
+    send_message=lambda question: chat_session.send_message(question).text,
+    data_path=application_data_path,
+    reset_chat=reset_chat_session,
+    set_companion_visible=set_companion_visible,
+    companion_is_visible=window.isVisible,
+    quit_app=quit_app,
+)
 sys.exit(app.exec())
