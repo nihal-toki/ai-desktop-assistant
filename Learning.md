@@ -104,3 +104,23 @@
 - Learned that macOS permissions apply separately to the packaged app and the Python interpreter, so Input Monitoring must be granted to `Zebraz.app` for global hotkeys to work
 - Updated `.gitignore` to protect `.env`, generated build files, and local conversation-memory files from Git commits
 
+## Day 7 - [Aug 16 2026]
+
+- Made an architecture decision for the MVP: keep building in PyQt6 and defer an Electron rewrite. Keep Gemini, memory, RAG, and companion behavior separate from macOS-specific code so Windows support can be added later without rewriting the whole app
+- Removed automatic wandering from the live app. Kept the old wandering function temporarily, but disabled every timer start so the change could be tested safely before deleting old code
+- Replaced wandering with drag-and-pin behavior:
+  - Added mouse press, move, and release handlers to the character label
+  - Used `event.globalPosition().toPoint()` to track the cursor across the desktop
+  - Bounded the window to the available screen area so the pet cannot be dragged off-screen
+  - Saved the pinned position in `~/Library/Application Support/Zebraz/zebraz_position.json`
+  - Restored and clamped the saved position when the app starts
+- Learned to distinguish a click from a drag with `QApplication.startDragDistance()`. A short press triggers a click reaction; movement beyond the threshold starts a drag instead
+- Added playful Qt animations with `QPropertyAnimation`:
+  - Click: the pet hops, stretches, squashes slightly, and the shadow reacts
+  - Pickup: the pet grows slightly while the shadow shrinks
+  - Drop: the pet squashes and settles while the shadow returns to normal
+  - Used `pyqtProperty`, `QParallelAnimationGroup`, and `QSequentialAnimationGroup` to animate the character and shadow together
+- Replaced the original character with a cute puppy asset. The app continues to load the file as `character.png`, so the animation and window code did not need to change
+- Debugged another image-loading issue by printing the resolved path, whether the file exists, and whether `QPixmap` loaded it successfully. Learned that seeing an image preview in the browser does not prove that the running PyCharm process is using that same file
+- Used Pillow to convert the generated pet imageâ€™s baked checkerboard into real per-pixel transparency. The final PNG uses an RGBA alpha channel, with the checkerboard pixels removed
+- Learned to read Git status before committing: modified files, staged files, and untracked files are separate states. Only the files listed in `git add` will be included in the next commit
